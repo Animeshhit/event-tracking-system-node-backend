@@ -16,6 +16,10 @@ export const events = pgTable(
 
     eventName: text("event_name").notNull(),
 
+    deviceId: text("device_id").notNull(),
+
+    sessionId: text("session_id").notNull(),
+
     productId: uuid("product_id").references(() => products.id),
 
     properties: jsonb("properties")
@@ -37,7 +41,24 @@ export const events = pgTable(
   },
 
   (table) => [
-    index("events_event_name_time_idx").on(table.eventName, table.occurredAt),
-    index("events_product_time_idx").on(table.productId, table.occurredAt),
-  ]
+    index("events_event_name_time_idx").on(
+      table.eventName,
+      table.occurredAt,
+    ),
+
+    index("events_product_time_idx").on(
+      table.productId,
+      table.occurredAt,
+    ),
+
+    index("events_device_time_idx").on(
+      table.deviceId,
+      table.occurredAt,
+    ),
+
+    index("events_session_time_idx").on(
+      table.sessionId,
+      table.occurredAt,
+    ),
+  ],
 );
