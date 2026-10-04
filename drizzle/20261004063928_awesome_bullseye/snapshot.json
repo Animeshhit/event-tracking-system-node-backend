@@ -1,0 +1,17 @@
+{
+  "version": "8",
+  "dialect": "postgres",
+  "id": "d960c5c1-caa0-438b-960f-5037fc49833f",
+  "prevIds": [
+    "00000000-0000-0000-0000-000000000000"
+  ],
+  "ddl": [
+    {
+      "isRlsEnabled": false,
+      "name": "users",
+      "entityType": "tables",
+      "schema": "public"
+    }
+  ],
+  "renames": []
+}

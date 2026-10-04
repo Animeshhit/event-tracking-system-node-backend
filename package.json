@@ -4,24 +4,22 @@
   "type": "module",
   "private": true,
   "devDependencies": {
-    "@prisma/cli-engine": "0.6.2",
     "@types/bun": "latest",
-    "@types/cors": "^2.8.19",
-    "@types/dotenv": "^8.2.3",
-    "@types/express": "^5.0.6",
-    "@types/node": "^26.6.4",
-    "prisma": "^8.0.0-rc.19"
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^1.0.0-rc.4",
+    "tsx": "^4.23.15"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
   "dependencies": {
-    "@prisma/orm-postgres": "^8.0.0-rc.14",
+    "@types/cors": "^2.8.19",
+    "@types/dotenv": "^8.2.3",
+    "@types/express": "^5.0.6",
     "cors": "^2.8.6",
     "dotenv": "^18.0.5",
-    "express": "^5.2.1"
-  },
-  "scripts": {
-    "contract:emit": "prisma contract emit"
+    "drizzle-orm": "^1.0.0-rc.4",
+    "express": "^5.2.1",
+    "pg": "^8.23.1"
   }
 }
