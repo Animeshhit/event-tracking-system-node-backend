@@ -1,4 +1,5 @@
 
+import { DB_URL } from "../../env";
 import { products } from "../db/schema"; 
 import { db } from "./index";
 
@@ -213,7 +214,7 @@ async function pickImage(p: SeedProduct, used: Set<string>): Promise<string | nu
 }
 
 async function main() {
-  if (!process.env.DATABASE_URL) {
+  if (!DB_URL) {
     throw new Error("DATABASE_URL is not set");
   }
 
