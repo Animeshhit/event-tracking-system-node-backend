@@ -1,19 +1,24 @@
-import { type Request, type Response } from "express";
+import {
+  type Request,
+  type Response,
+} from "express";
+
 import { db } from "../db";
 import { events } from "../db/schema";
 
-export const createAEvent = async (req: Request, res: Response) => {
-  try {
-    const {
-      eventName,
-      sessionId,
-      productId,
-      properties = {},
-      occurredAt,
-    } = req.body;
+import { validateEvent } from "../lib/validations/eventValidations";
 
-    const deviceId = req.cookies.device_id;
-    const userId = req.userId;
+export const createAEvent = async (
+  req: Request,
+  res: Response,
+) => {
+  try {
+    // --------------------------------
+    // Device ID
+    // --------------------------------
+
+    const deviceId =
+      req.cookies?.device_id;
 
     if (!deviceId) {
       return res.status(400).json({
@@ -21,28 +26,52 @@ export const createAEvent = async (req: Request, res: Response) => {
       });
     }
 
-    if (!sessionId) {
+   
+
+    const userId =
+      req.userId ?? null;
+
+    // --------------------------------
+    // Validate event
+    // --------------------------------
+
+    const validation =
+      validateEvent(req.body);
+
+    if (!validation.success) {
       return res.status(400).json({
-        message: "Session ID is missing",
+        message: validation.message,
       });
     }
 
-    if (!eventName) {
-      return res.status(400).json({
-        message: "Event name is missing",
-      });
-    }
+    const {
+      eventName,
+      sessionId,
+      productId,
+      properties,
+      occurredAt,
+    } = validation.data;
+
+  
 
     const [event] = await db
       .insert(events)
       .values({
         eventName,
+
         deviceId,
+
         sessionId,
-        userId: userId ?? null,
+
+        // NULL for guest users
+        // Actual UUID for logged-in users
+        userId,
+
         productId,
+
         properties,
-        occurredAt: occurredAt ? new Date(occurredAt) : new Date(),
+
+        occurredAt,
       })
       .returning();
 
@@ -51,7 +80,10 @@ export const createAEvent = async (req: Request, res: Response) => {
       event,
     });
   } catch (error) {
-    console.error("Event tracking error:", error);
+    console.error(
+      "Event tracking error:",
+      error,
+    );
 
     return res.status(500).json({
       message: "Failed to store event",
