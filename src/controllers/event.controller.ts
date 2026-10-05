@@ -1,7 +1,4 @@
-import {
-  type Request,
-  type Response,
-} from "express";
+import { type Request, type Response } from "express";
 
 import { db } from "../db";
 import { events } from "../db/schema";
@@ -12,18 +9,15 @@ import { and, count, desc, eq, gte, isNotNull, isNull, lte } from "drizzle-orm";
 import { isUUID } from "validator";
 
 import { ALLOWED_EVENTS } from "../constants/AllowedEvents";
+import { enqueueEvent } from "../queue/event.queue";
 
-export const createAEvent = async (
-  req: Request,
-  res: Response,
-) => {
+export const createAEvent = async (req: Request, res: Response) => {
   try {
     // --------------------------------
     // Device ID
     // --------------------------------
 
-    const deviceId =
-      req.cookies?.device_id;
+    const deviceId = req.cookies?.device_id;
 
     if (!deviceId) {
       return res.status(400).json({
@@ -31,17 +25,13 @@ export const createAEvent = async (
       });
     }
 
-   
-
-    const userId =
-      req.userId ?? null;
+    const userId = req.userId ?? null;
 
     // --------------------------------
     // Validate event
     // --------------------------------
 
-    const validation =
-      validateEvent(req.body);
+    const validation = validateEvent(req.body);
 
     if (!validation.success) {
       return res.status(400).json({
@@ -49,53 +39,29 @@ export const createAEvent = async (
       });
     }
 
-    const {
-      eventName,
-      sessionId,
-      productId,
-      properties,
-      occurredAt,
-      eventId
-    } = validation.data;
+    const { eventName, sessionId, productId, properties, occurredAt, eventId } =
+      validation.data;
 
     // --------------------------------
     // Insert event
     // --------------------------------
 
-    const [event] = await db
-      .insert(events)
-      .values({
-        eventId,
-        eventName,
+    await enqueueEvent({
+      eventId,
+      eventName,
+      deviceId,
+      sessionId,
+      userId,
+      productId,
+      properties,
+      occurredAt,
+    });
 
-        deviceId,
-
-        sessionId,
-
-        // NULL for guest users
-        // Actual UUID for logged-in users
-        userId,
-
-        productId,
-
-        properties,
-
-        occurredAt,
-      })
-       .onConflictDoNothing({
-        target: events.eventId,
-      })
-      .returning();
-
-    return res.status(201).json({
-      message: "Event stored successfully",
-      event,
+    return res.status(202).json({
+      message: "Event accepted",
     });
   } catch (error) {
-    console.error(
-      "Event tracking error:",
-      error,
-    );
+    console.error("Event tracking error:", error);
 
     return res.status(500).json({
       message: "Failed to store event",
@@ -103,13 +69,7 @@ export const createAEvent = async (
   }
 };
 
-
-
-
-export const getEvents = async (
-  req: Request,
-  res: Response,
-) => {
+export const getEvents = async (req: Request, res: Response) => {
   try {
     const {
       page: pageQuery,
@@ -128,20 +88,13 @@ export const getEvents = async (
     const page = Number(pageQuery ?? 1);
     const limit = Number(limitQuery ?? 20);
 
-    if (
-      !Number.isInteger(page) ||
-      page < 1
-    ) {
+    if (!Number.isInteger(page) || page < 1) {
       return res.status(400).json({
         message: "Invalid page",
       });
     }
 
-    if (
-      !Number.isInteger(limit) ||
-      limit < 1 ||
-      limit > 100
-    ) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       return res.status(400).json({
         message: "Limit must be between 1 and 100",
       });
@@ -166,25 +119,18 @@ export const getEvents = async (
         });
       }
 
-      conditions.push(
-        eq(events.eventName, eventName),
-      );
+      conditions.push(eq(events.eventName, eventName));
     }
 
     // Product ID
     if (productId !== undefined) {
-      if (
-        typeof productId !== "string" ||
-        !isUUID(productId)
-      ) {
+      if (typeof productId !== "string" || !isUUID(productId)) {
         return res.status(400).json({
           message: "Invalid product ID",
         });
       }
 
-      conditions.push(
-        eq(events.productId, productId),
-      );
+      conditions.push(eq(events.productId, productId));
     }
 
     // --------------------------------
@@ -206,9 +152,7 @@ export const getEvents = async (
         });
       }
 
-      conditions.push(
-        gte(events.occurredAt, fromDate),
-      );
+      conditions.push(gte(events.occurredAt, fromDate));
     }
 
     if (to !== undefined) {
@@ -226,9 +170,7 @@ export const getEvents = async (
         });
       }
 
-      conditions.push(
-        lte(events.occurredAt, toDate),
-      );
+      conditions.push(lte(events.occurredAt, toDate));
     }
 
     // --------------------------------
@@ -236,24 +178,16 @@ export const getEvents = async (
     // --------------------------------
 
     if (guest !== undefined) {
-      if (
-        guest !== "true" &&
-        guest !== "false"
-      ) {
+      if (guest !== "true" && guest !== "false") {
         return res.status(400).json({
-          message:
-            "guest must be true or false",
+          message: "guest must be true or false",
         });
       }
 
       if (guest === "true") {
-        conditions.push(
-          isNull(events.userId),
-        );
+        conditions.push(isNull(events.userId));
       } else {
-        conditions.push(
-          isNotNull(events.userId),
-        );
+        conditions.push(isNotNull(events.userId));
       }
     }
 
@@ -262,9 +196,7 @@ export const getEvents = async (
     // --------------------------------
 
     const whereCondition =
-      conditions.length > 0
-        ? and(...conditions)
-        : undefined;
+      conditions.length > 0 ? and(...conditions) : undefined;
 
     const results = await db
       .select()
@@ -294,16 +226,11 @@ export const getEvents = async (
         page,
         limit,
         total: Number(total),
-        totalPages: Math.ceil(
-          Number(total) / limit,
-        ),
+        totalPages: Math.ceil(Number(total) / limit),
       },
     });
   } catch (error) {
-    console.error(
-      "Failed to fetch events:",
-      error,
-    );
+    console.error("Failed to fetch events:", error);
 
     return res.status(500).json({
       message: "Failed to fetch events",
