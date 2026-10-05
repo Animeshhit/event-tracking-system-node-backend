@@ -41,7 +41,6 @@ export const RegisterUser = async (req: Request, res: Response) => {
 
     const deviceId = req.cookies.device_id;
 
-        console.log("REGISTER DEVICE ID:", deviceId);
 
     if (deviceId) {
       await db
@@ -106,8 +105,6 @@ export const LoginUser = async (req: Request, res: Response) => {
 
     const deviceId = req.cookies.device_id;
 
-    console.log("LOGIN DEVICE ID:", deviceId);
-console.log("LOGIN USER ID:", user.id);
 
     if (deviceId) {
       await db
