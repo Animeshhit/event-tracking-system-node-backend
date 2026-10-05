@@ -1,15 +1,16 @@
 import { type Request, type Response } from "express";
 
 import { db } from "../db";
-import { events } from "../db/schema";
+import { events,deviceUsers } from "../db/schema";
 
 import { validateEvent } from "../lib/validations/eventValidations";
 
-import { and, count, desc, eq, gte, isNotNull, isNull, lte } from "drizzle-orm";
+import { and, count, desc, eq, gte, isNotNull, isNull, lte ,inArray, or,} from "drizzle-orm";
 import { isUUID } from "validator";
 
 import { ALLOWED_EVENTS } from "../constants/AllowedEvents";
 import { enqueueEvent } from "../queue/event.queue";
+
 
 export const createAEvent = async (req: Request, res: Response) => {
   try {
@@ -79,6 +80,8 @@ export const getEvents = async (req: Request, res: Response) => {
       from,
       to,
       guest,
+      userId,
+      deviceId,
     } = req.query;
 
     // --------------------------------
@@ -108,7 +111,53 @@ export const getEvents = async (req: Request, res: Response) => {
 
     const conditions = [];
 
+    // --------------------------------
+    // User ID
+    // --------------------------------
+
+
+    console.log("USER ID FROM QUERY:", userId);
+console.log("DEVICE ID FROM QUERY:", deviceId);
+   if (userId !== undefined) {
+  if (typeof userId !== "string" || !isUUID(userId)) {
+    return res.status(400).json({
+      message: "Invalid user ID",
+    });
+  }
+
+  const linkedDevices = await db
+    .select({
+      deviceId: deviceUsers.deviceId,
+    })
+    .from(deviceUsers)
+    .where(eq(deviceUsers.userId, userId));
+
+  const deviceIds = linkedDevices.map(
+    ({ deviceId }) => deviceId,
+  );
+
+  console.log("USER ID:", userId);
+  console.log("LINKED DEVICES:", deviceIds);
+
+  if (deviceIds.length > 0) {
+    conditions.push(
+      or(
+        eq(events.userId, userId),
+        and(
+          inArray(events.deviceId, deviceIds),
+          isNull(events.userId),
+        ),
+      ),
+    );
+  } else {
+    conditions.push(eq(events.userId, userId));
+  }
+}
+
+    // --------------------------------
     // Event name
+    // --------------------------------
+
     if (eventName !== undefined) {
       if (
         typeof eventName !== "string" ||
@@ -122,7 +171,10 @@ export const getEvents = async (req: Request, res: Response) => {
       conditions.push(eq(events.eventName, eventName));
     }
 
+    // --------------------------------
     // Product ID
+    // --------------------------------
+
     if (productId !== undefined) {
       if (typeof productId !== "string" || !isUUID(productId)) {
         return res.status(400).json({
@@ -196,7 +248,9 @@ export const getEvents = async (req: Request, res: Response) => {
     // --------------------------------
 
     const whereCondition =
-      conditions.length > 0 ? and(...conditions) : undefined;
+      conditions.length > 0
+        ? and(...conditions)
+        : undefined;
 
     const results = await db
       .select()

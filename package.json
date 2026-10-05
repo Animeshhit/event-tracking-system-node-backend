@@ -13,6 +13,10 @@
     "drizzle-kit": "^1.0.0-rc.4",
     "tsx": "^4.23.15"
   },
+  "scripts": {
+    "dev": "bun run index.ts",
+    "worker": "bun run src/workers/event.worker.ts"
+  },
   "peerDependencies": {
     "typescript": "^5"
   },
