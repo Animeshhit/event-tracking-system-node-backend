@@ -1,76 +1,17 @@
 import {Router} from "express";
-import {events} from "../db/schema";
+import {deviceUsers, events} from "../db/schema";
 import { db } from "../db";
+import { createAEvent } from "../controllers/event.controllers";
+import { checkAuth } from "../middlewares/auth.middlewares";
 
 
 const EventRouter = Router();
 
 
 
+EventRouter.post("/events",checkAuth, createAEvent);
 
-
-
-
-EventRouter.post("/events", async (req, res) => {
-  try {
-    const {
-      eventName,
-      sessionId,
-      productId,
-      properties = {},
-      occurredAt,
-    } = req.body;
-
-
-
-    const deviceId = req.cookies.device_id;
-
-    if (!deviceId) {
-      return res.status(400).json({
-        message: "Device ID is missing",
-      });
-    }
-
-    if (!sessionId) {
-      return res.status(400).json({
-        message: "Session ID is missing",
-      });
-    }
-
-    if (!eventName) {
-      return res.status(400).json({
-        message: "Event name is missing",
-      });
-    }
-
-    const [event] = await db
-      .insert(events)
-      .values({
-        eventName,
-        deviceId,
-        sessionId,
-        productId,
-        properties,
-        occurredAt: occurredAt
-          ? new Date(occurredAt)
-          : new Date(),
-      })
-      .returning();
-
-    return res.status(201).json({
-      message: "Event stored successfully",
-      event,
-    });
-  } catch (error) {
-    console.error("Event tracking error:", error);
-
-    return res.status(500).json({
-      message: "Failed to store event",
-    });
-  }
-});
-
-
+// only for testing 
 EventRouter.get("/events", async (req, res) => {
     try {
         const eventsFromDb = await db.select().from(events).limit(100);
@@ -82,6 +23,17 @@ EventRouter.get("/events", async (req, res) => {
     }
 });
 
+
+EventRouter.get("/devices", async (req,res) => {
+     try {
+        const eventsFromDb = await db.select().from(deviceUsers).limit(100);
+        res.json(eventsFromDb).status(200);
+    }
+    catch (err) {
+        console.log(err);
+        res.json({ message: "internal server error" }).status(500);
+    }
+})
 
 
 

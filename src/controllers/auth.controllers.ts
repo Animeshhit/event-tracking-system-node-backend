@@ -2,15 +2,13 @@ import { type Request, type Response } from "express";
 import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
 import { db } from "../db/index.ts";
-import { users, refreshTokens } from "../db/schema";
+import { users, refreshTokens, deviceUsers } from "../db/schema";
 import {
   generateAccessToken,
   generateRefreshToken,
   hashToken,
   getRefreshTokenExpiryDate,
 } from "../lib/tokens.ts";
-
-
 
 /* --------------------------- REGISTER --------------------------- */
 
@@ -22,7 +20,10 @@ export const RegisterUser = async (req: Request, res: Response) => {
       return res.status(400).json({ message: "All fields are required" });
     }
 
-    const existingUser = await db.select().from(users).where(eq(users.email, email));
+    const existingUser = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, email));
 
     if (existingUser.length > 0) {
       return res.status(409).json({ message: "User already exists" });
@@ -35,11 +36,27 @@ export const RegisterUser = async (req: Request, res: Response) => {
       .values({ name, email, password: hashedPassword })
       .returning({ id: users.id, name: users.name, email: users.email });
 
+    if (!newUser)
+      return res.status(500).json({ message: "Failed to create user" });
 
-      if(!newUser) return res.status(500).json({ message: "Failed to create user" });
+    const deviceId = req.cookies.device_id;
 
+        console.log("REGISTER DEVICE ID:", deviceId);
+
+    if (deviceId) {
+      await db
+        .insert(deviceUsers)
+        .values({
+          deviceId,
+          userId: newUser.id,
+        })
+        .onConflictDoNothing();
+    }
     // --- auto-login: issue tokens immediately ---
-    const accessToken = generateAccessToken({ userId: newUser.id, email: newUser.email });
+    const accessToken = generateAccessToken({
+      userId: newUser.id,
+      email: newUser.email,
+    });
     const refreshToken = generateRefreshToken();
 
     await db.insert(refreshTokens).values({
@@ -47,8 +64,6 @@ export const RegisterUser = async (req: Request, res: Response) => {
       tokenHash: hashToken(refreshToken),
       expiresAt: getRefreshTokenExpiryDate(),
     });
-
-   
 
     return res.status(201).json({
       message: "User registered successfully",
@@ -69,7 +84,9 @@ export const LoginUser = async (req: Request, res: Response) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({ message: "Email and password are required" });
+      return res
+        .status(400)
+        .json({ message: "Email and password are required" });
     }
 
     const [user] = await db
@@ -87,7 +104,25 @@ export const LoginUser = async (req: Request, res: Response) => {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    const accessToken = generateAccessToken({ userId: user.id, email: user.email });
+    const deviceId = req.cookies.device_id;
+
+    console.log("LOGIN DEVICE ID:", deviceId);
+console.log("LOGIN USER ID:", user.id);
+
+    if (deviceId) {
+      await db
+        .insert(deviceUsers)
+        .values({
+          deviceId,
+          userId: user.id,
+        })
+        .onConflictDoNothing();
+    }
+
+    const accessToken = generateAccessToken({
+      userId: user.id,
+      email: user.email,
+    });
     const refreshToken = generateRefreshToken();
 
     await db.insert(refreshTokens).values({
@@ -130,7 +165,9 @@ export const RefreshAccessToken = async (req: Request, res: Response) => {
       .limit(1);
 
     if (!stored || stored.revoked || stored.expiresAt < new Date()) {
-      return res.status(403).json({ message: "Invalid or expired refresh token" });
+      return res
+        .status(403)
+        .json({ message: "Invalid or expired refresh token" });
     }
 
     const newRefreshToken = generateRefreshToken();

@@ -3,6 +3,7 @@ import cors from "cors";
 import ProductRoutes from "./src/routes/product.routes";
 import EventRoutes from "./src/routes/event.routes";
 import cookieParser from "cookie-parser";
+import authRouter from "./src/routes/auth.routes";
 
 const app = express();
 
@@ -20,6 +21,7 @@ app.use(cookieParser());
 
 app.use("/api/v1",ProductRoutes);
 app.use("/api/v1",EventRoutes);
+app.use('/api/v1/auth',authRouter);
 
 
 

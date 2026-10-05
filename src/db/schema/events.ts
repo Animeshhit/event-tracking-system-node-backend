@@ -8,6 +8,7 @@ import {
 } from "drizzle-orm/pg-core";
 
 import { products } from "./products";
+import { users } from "./users";
 
 export const events = pgTable(
   "events",
@@ -19,6 +20,8 @@ export const events = pgTable(
     deviceId: text("device_id").notNull(),
 
     sessionId: text("session_id").notNull(),
+
+    userId: uuid("user_id").references(() => users.id),
 
     productId: uuid("product_id").references(() => products.id),
 
@@ -58,6 +61,11 @@ export const events = pgTable(
 
     index("events_session_time_idx").on(
       table.sessionId,
+      table.occurredAt,
+    ),
+
+    index("events_user_time_idx").on(
+      table.userId,
       table.occurredAt,
     ),
   ],
