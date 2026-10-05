@@ -3,8 +3,7 @@ const API_URL = "http://localhost:8080/api/v1";
 const TARGET_EVENTS_PER_SECOND = 10_000;
 const TEST_DURATION_SECONDS = 10;
 
-// Number of requests allowed to be in-flight simultaneously.
-const CONCURRENCY = 500;
+const CONCURRENCY = 10000;
 
 const productId = "7f8ef302-030c-4069-ad82-b0335f6a6f22";
 
@@ -85,10 +84,7 @@ const main = async () => {
   ) {
     const secondStart = performance.now();
 
-    /*
-     * Send exactly TARGET_EVENTS_PER_SECOND
-     * during this one-second window.
-     */
+  
     let sentThisSecond = 0;
 
     while (
@@ -127,10 +123,7 @@ const main = async () => {
 
       sentThisSecond += batchSize;
 
-      /*
-       * Don't accidentally send more than
-       * the target for this second.
-       */
+     
       if (
         performance.now() - secondStart >=
         1000
@@ -152,10 +145,7 @@ const main = async () => {
         `Rate: ${actualRate.toFixed(0)} events/sec`,
     );
 
-    /*
-     * If the server finished the batch early,
-     * wait until the one-second window finishes.
-     */
+   
     const remainingTime =
       1000 -
       (performance.now() - secondStart);
