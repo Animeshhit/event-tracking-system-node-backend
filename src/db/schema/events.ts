@@ -14,6 +14,7 @@ export const events = pgTable(
   "events",
   {
     id: uuid("id").defaultRandom().primaryKey(),
+    eventId: uuid("event_id").notNull().unique(),
 
     eventName: text("event_name").notNull(),
 
@@ -44,29 +45,14 @@ export const events = pgTable(
   },
 
   (table) => [
-    index("events_event_name_time_idx").on(
-      table.eventName,
-      table.occurredAt,
-    ),
+    index("events_event_name_time_idx").on(table.eventName, table.occurredAt),
 
-    index("events_product_time_idx").on(
-      table.productId,
-      table.occurredAt,
-    ),
+    index("events_product_time_idx").on(table.productId, table.occurredAt),
 
-    index("events_device_time_idx").on(
-      table.deviceId,
-      table.occurredAt,
-    ),
+    index("events_device_time_idx").on(table.deviceId, table.occurredAt),
 
-    index("events_session_time_idx").on(
-      table.sessionId,
-      table.occurredAt,
-    ),
+    index("events_session_time_idx").on(table.sessionId, table.occurredAt),
 
-    index("events_user_time_idx").on(
-      table.userId,
-      table.occurredAt,
-    ),
+    index("events_user_time_idx").on(table.userId, table.occurredAt),
   ],
 );

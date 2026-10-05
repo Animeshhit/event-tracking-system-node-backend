@@ -50,13 +50,17 @@ export const createAEvent = async (
       productId,
       properties,
       occurredAt,
+      eventId
     } = validation.data;
 
-  
+    // --------------------------------
+    // Insert event
+    // --------------------------------
 
     const [event] = await db
       .insert(events)
       .values({
+        eventId,
         eventName,
 
         deviceId,
@@ -72,6 +76,9 @@ export const createAEvent = async (
         properties,
 
         occurredAt,
+      })
+       .onConflictDoNothing({
+        target: events.eventId,
       })
       .returning();
 

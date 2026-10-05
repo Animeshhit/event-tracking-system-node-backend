@@ -8,6 +8,7 @@ import {
 type EventProperties = Record<string, unknown>;
 
 type ValidateEventInput = {
+         eventId: string;
   eventName: unknown;
   sessionId: unknown;
   productId?: unknown;
@@ -16,6 +17,7 @@ type ValidateEventInput = {
 };
 
 type ValidatedEvent = {
+    eventId:string;
   eventName: EventName;
   sessionId: string;
   productId: string | null;
@@ -42,6 +44,7 @@ export const validateEvent = (
     productId,
     properties = {},
     occurredAt,
+    eventId
   } = input;
 
   // --------------------------------
@@ -68,6 +71,16 @@ export const validateEvent = (
       message: "Invalid event name",
     };
   }
+
+  if (
+  typeof eventId !== "string" ||
+  !isUUID(eventId)
+) {
+  return {
+    success: false,
+    message: "Invalid event ID",
+  };
+}
 
   // --------------------------------
   // Session ID
@@ -404,6 +417,7 @@ export const validateEvent = (
       productId: validatedProductId,
       properties: validatedProperties,
       occurredAt: validatedOccurredAt,
+      eventId,
     },
   };
 };
