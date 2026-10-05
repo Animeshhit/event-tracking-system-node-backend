@@ -5,7 +5,7 @@ import {
   RefreshAccessToken,
   LogoutUser,
   getCurrentUser,
-} from "../controllers/auth.controllers.ts";
+} from "../controllers/auth.controller.ts";
 import { requireAuth } from "../middlewares/auth.middlewares.ts";
 import { authLimiter, refreshLimiter } from "../middlewares/ratelimiter.ts";
 
@@ -16,5 +16,6 @@ authRouter.post("/login", authLimiter, LoginUser);
 authRouter.post("/refresh", refreshLimiter, RefreshAccessToken);
 authRouter.post("/logout", requireAuth, LogoutUser);
 authRouter.get("/me", requireAuth, getCurrentUser);
+
 
 export default authRouter;
