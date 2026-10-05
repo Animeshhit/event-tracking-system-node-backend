@@ -1,81 +1,138 @@
 # Analytics Backend
 
-## Overview
+Event-tracking and analytics API for an e-commerce store. It collects activity from **guest and logged-in users**, stores it reliably, links old guest activity to a user after login, and serves the data behind the analytics dashboard (event counts, conversion funnel, trends, raw activity).
 
-This backend is the event-tracking and analytics API for the e-commerce analytics system.
-
-The main goal is to collect user activity from both guest users and authenticated users, persist the events, associate historical guest activity with users after login, and provide analytics data for the dashboard.
-
-The backend is implemented with:
-
-- Bun
-- TypeScript
-- Express
-- PostgreSQL
-- Drizzle ORM
-- Redis Streams
-- Docker
-- Cookie-based authentication
+**Stack:** Bun · TypeScript · Express · PostgreSQL · Drizzle ORM · Redis Streams · Docker
 
 ---
 
-# Problem
+## Table of contents
 
-The application needs to track events such as:
-
-- Product views
-- Searches
-- Category clicks
-- Add to cart
-- Remove from cart
-- Buy now
-- Wishlist
-- Checkout
-- Payment
-- Purchase
-
-The system must support both:
-
-1. Guest users
-2. Logged-in users
-
-Guest activity should not be lost when the user later logs in.
-
-The system should also be able to handle high event volume and provide data for analytics and conversion-funnel visualization.
+- [Why this exists](#why-this-exists)
+- [How it works](#how-it-works)
+- [Getting started](#getting-started)
+- [Event tracking](#event-tracking)
+- [Guest-to-user binding](#guest-to-user-binding)
+- [API overview](#api-overview)
+- [Redis Streams pipeline](#redis-streams-pipeline)
+- [Database](#database)
+- [Testing](#testing)
+- [What's implemented](#whats-implemented)
+- [What's missing and what to do next](#whats-missing-and-what-to-do-next)
 
 ---
 
-# Solution
+## Why this exists
 
-The backend uses a device + session + user identity model.
+The store needs to track:
 
-### Guest
+| Area | Events |
+|---|---|
+| Browsing | product views, searches, category clicks |
+| Intent | add to cart, remove from cart, wishlist |
+| Conversion | buy now, checkout, payment, purchase |
+
+Two requirements shape the design:
+
+1. **Guest activity must not be lost.** Someone who browses as a guest and then signs up should still have their earlier activity attached to their account.
+2. **High event volume.** Writing every event straight to Postgres on the request path doesn't scale, so ingestion and persistence are separated by a queue.
+
+---
+
+## How it works
+
+Every event carries three identities: a device, a session, and (optionally) a user.
 
 ```text
-deviceId = D1
-sessionId = S1
-userId = null
+Guest:            deviceId = D1   sessionId = S1      userId = null
+After login:      deviceId = D1   sessionId = S1/S2   userId = U1
 ```
 
-### After login
+Old guest events are **never rewritten**. Instead, the link between a device and a user is stored in a `device_users` table, and queries join through it. That keeps the raw data intact and still lets a user's full history be shown.
 
-```text
-deviceId = D1
-sessionId = S1/S2
-userId = U1
+### Architecture
+
+```mermaid
+flowchart TD
+    FE[Next.js frontend] -->|events| API[Express / Bun API]
+    API --> AUTH[Auth middleware<br/>guest or user]
+    API --> VAL[Event validation]
+    VAL --> RS[(Redis Stream: events)]
+    RS --> W1[Worker 1]
+    RS --> W2[Worker 2]
+    RS --> W3[Worker 3]
+    W1 --> PG[(PostgreSQL)]
+    W2 --> PG
+    W3 --> PG
+    PG --> ANA[Analytics APIs]
+    ANA --> FE
 ```
-
-The old guest events are intentionally not rewritten.
-
-Instead, the relationship is stored in `device_users`.
-
-This allows historical guest activity to be associated with the user during queries.
 
 ---
 
-# Project Structure
+## Getting started
 
-The project keeps the application code under `src/`.
+### Prerequisites
+
+- [Bun](https://bun.sh)
+- Docker (for PostgreSQL and Redis)
+
+### 1. Install dependencies
+
+```bash
+bun install
+```
+
+### 2. Configure environment
+
+Create a `.env` file in the project root:
+
+```bash
+DATABASE_URL=postgresql://postgres:mysecretpassword@localhost:5433/mydb
+ACCESS_TOKEN_SECRET=change-me-to-a-long-random-string
+ACCESS_TOKEN_EXPIRY=1d
+REFRESH_TOKEN_EXPIRY=7d
+```
+
+> Use a long random value for `ACCESS_TOKEN_SECRET` outside local development. If your Redis connection reads its URL from an env variable, add it here too.
+
+### 3. Start PostgreSQL and Redis
+
+```bash
+docker compose up -d
+docker ps   # verify both containers are running
+```
+
+### 4. Run database migrations
+
+```bash
+bunx drizzle-kit migrate
+```
+
+After changing the schema, generate a new migration first:
+
+```bash
+bunx drizzle-kit generate
+bunx drizzle-kit migrate
+```
+
+### 5. Start the API
+
+```bash
+bun index.ts
+```
+
+The API is available at `http://localhost:8080`.
+
+### 6. Start the event worker(s)
+
+```bash
+bun src/workers/event.worker.ts
+```
+
+Run the same command in more terminals to add workers. Each one joins the same Redis consumer group under its own consumer name, so Redis splits the messages between them.
+
+### Project structure
 
 ```text
 .
@@ -88,13 +145,12 @@ The project keeps the application code under `src/`.
 │   ├── services/
 │   ├── utils/
 │   ├── workers/
-│   ├── scripts/
-│   │   ├── test-user-binding.ts
-│   │   ├── test-10000-events.ts
-│   │   └── test-10000-per-sec.ts
-│   └── ...
-│
-├── index.ts
+│   └── scripts/              # standalone test scripts
+│       ├── test-user-binding.ts
+│       ├── test-10000-events.ts
+│       └── test-10000-per-sec.ts
+├── docs/                     # screenshots used in this README
+├── index.ts                  # entry point
 ├── app.ts
 ├── env.ts
 ├── docker-compose.yml
@@ -103,440 +159,147 @@ The project keeps the application code under `src/`.
 └── .env
 ```
 
-`index.ts`, `app.ts`, and `env.ts` are kept outside `src/`.
+---
 
-Test scripts are kept under:
+## Event tracking
+
+Each event contains:
 
 ```text
-src/scripts/
+eventId, eventName, deviceId, sessionId, userId,
+productId, properties, occurredAt, createdAt
 ```
+
+### Supported events
+
+`product_view` · `search` · `category_click` · `add_to_cart` · `remove_from_cart` · `buy_now` · `wishlist` · `checkout` · `payment` · `purchase`
+
+### Validation
+
+Each event type is validated before it's stored. For example:
+
+| Event | Required |
+|---|---|
+| `product_view` | `productId` |
+| `search` | a search query |
+| `add_to_cart` | product and quantity |
+| `payment` | amount and payment status |
+| `purchase` | order ID and amount |
+
+### Duplicate protection
+
+`eventId` is generated on the client and has a **unique constraint** in the database, so retrying the same event can't insert it twice.
+
+The system deliberately does **not** deduplicate on `eventName + deviceId`, `eventName + sessionId` or `eventName + productId`, because one user can legitimately fire the same event many times (viewing the same product twice, for example).
 
 ---
 
-# Running the Backend
+## Guest-to-user binding
 
-## 1. Install dependencies
+Guests can send events without logging in (`userId = null`). A middleware checks each request and treats it as either an authenticated user or a guest. The device ID is kept in a cookie.
 
-```bash
-bun install
-```
+When a user logs in on a device, the pair is stored in `device_users`. A device can be linked to more than one user.
 
-## 2. ENV Setup
+To fetch a user's events, the API:
 
-```bash
-DATABASE_URL=postgresql://postgres:mysecretpassword@localhost:5433/mydb
-ACCESS_TOKEN_SECRET=hellothisisasecret
-ACCESS_TOKEN_EXPIRY=1d
-REFRESH_TOKEN_EXPIRY=7d
-```
-
-## 3. Start PostgreSQL and Redis
-
-```bash
-docker compose up -d
-```
-
-Verify containers:
-
-```bash
-docker ps
-```
-
-## 4. Run database migrations
-
-```bash
-bunx drizzle-kit migrate
-```
-
-If migrations need to be generated after schema changes:
-
-```bash
-bunx drizzle-kit generate
-bunx drizzle-kit migrate
-```
-
-## 5. Start the backend
-
-The backend is started with:
-
-```bash
-bun index.ts
-```
-
-The API runs on:
-
-```text
-http://localhost:8080
-```
-
-## 6. Start the event worker
-
-Run the worker from the worker file:
-
-```bash
-bun src/workers/event.worker.ts
-```
-
-Multiple worker processes can be started using the same command.
-
-Each worker joins the same Redis consumer group and receives its own messages.
-
-Example:
-
-```text
-Terminal 1
-bun src/workers/event.worker.ts
-
-Terminal 2
-bun src/workers/event.worker.ts
-
-Terminal 3
-bun src/workers/event.worker.ts
-```
-
----
-
-# Event Tracking
-
-Each event contains information such as:
-
-```text
-eventId
-eventName
-deviceId
-sessionId
-userId
-productId
-properties
-occurredAt
-createdAt
-```
-
-`eventId` is generated on the client and is unique.
-
-The database has a unique constraint on `eventId`.
-
-This prevents the same event from being inserted multiple times.
-
-The system does not deduplicate using:
-
-```text
-eventName + deviceId
-eventName + sessionId
-eventName + productId
-```
-
-because the same user can legitimately generate the same event multiple times.
-
----
-
-# Supported Events
-
-```text
-product_view
-search
-category_click
-add_to_cart
-remove_from_cart
-buy_now
-wishlist
-checkout
-payment
-purchase
-```
-
-Event-specific validation is performed before an event is stored.
-
-Examples:
-
-- `product_view` requires `productId`
-- `search` requires a search query
-- `add_to_cart` requires product and quantity
-- `payment` requires amount and payment status
-- `purchase` requires order ID and amount
-
----
-
-# Guest and Logged-in Users
-
-Guest requests are allowed on the event ingestion endpoint.
-
-Authentication is checked using middleware that can distinguish between:
-
-```text
-Authenticated user
-Guest user
-```
-
-For guests:
-
-```text
-userId = null
-```
-
-For authenticated users:
-
-```text
-userId = authenticated user's ID
-```
-
-The device ID is maintained using a cookie.
-
----
-
-# Device and User Binding
-
-The `device_users` table stores the relationship between devices and users.
-
-A device can be associated with multiple users.
-
-The system does not modify old guest events after login.
-
-Instead, when querying events for a user:
-
-```text
-1. Find all devices linked to the user.
-2. Find events belonging directly to the user.
-3. Find historical guest events from those linked devices.
-4. Combine the results.
-```
-
-Conceptually:
+1. finds every device linked to the user,
+2. finds events that belong directly to the user,
+3. finds historical guest events from those linked devices,
+4. combines the results.
 
 ```text
 User U1
-   |
-   +---- Device D1
-   |       |
-   |       +---- Guest events
-   |       +---- Logged-in events
-   |
-   +---- Device D2
-           |
-           +---- Guest events
-           +---- Logged-in events
+  ├── Device D1  ── guest events + logged-in events
+  └── Device D2  ── guest events + logged-in events
 ```
-
-This preserves the original event data while still allowing historical activity to be visualized for the user.
 
 ---
 
-# Event Retrieval
+## API overview
 
-The event API supports filtering by fields such as:
+| Capability | Notes |
+|---|---|
+| Event ingestion | `POST /events`, accepts guest and authenticated traffic |
+| Event retrieval | `GET /api/v1/events` with filters and pagination |
+| Product search | `/products/search`, registered **before** `/products/:id` so "search" isn't treated as an id |
+| Authentication | register, login, refresh token, logout, current user |
+| Analytics | event counts, conversion funnel, event trends, raw activity |
 
-```text
-page
-limit
-eventName
-productId
-from
-to
-guest
-userId
-deviceId
-```
-
-Examples:
+### Event filters
 
 ```text
-/api/v1/events?userId=<USER_ID>
+page, limit, eventName, productId, from, to, guest, userId, deviceId
 ```
 
 ```text
-/api/v1/events?deviceId=<DEVICE_ID>
+/api/v1/events?userId=<USER_ID>      # direct events + guest events from linked devices
+/api/v1/events?deviceId=<DEVICE_ID>  # activity from one device
 ```
 
-A user query includes both:
+Results are paginated, so a query never returns an unbounded number of rows.
 
-- events directly associated with the user
-- historical guest events from devices linked to that user
-
-A device query returns activity from that device.
-
-Pagination is supported to avoid returning an unlimited number of events.
+The analytics endpoints support filtering by date range, event type, product and guest/logged-in type. The raw event endpoint also accepts `userId` and `deviceId`, so a single user's or device's activity can be visualised.
 
 ---
 
-# Search
+## Redis Streams pipeline
 
-Product search is implemented before the dynamic product route so that:
-
-```text
-/products/search
-```
-
-is not incorrectly matched by:
+Ingestion and persistence are decoupled so database speed doesn't limit how fast events can be accepted.
 
 ```text
-/products/:id
+Client → POST /events → Redis Stream → Consumer group → Workers → PostgreSQL
 ```
 
-Search uses case-insensitive matching across product fields.
+| Setting | Value |
+|---|---|
+| Stream | `events` |
+| Consumer group | `event-workers` |
+| Consumers | one per worker process, e.g. `worker-123`, `worker-456` |
 
-The frontend also tracks the search activity as an analytics event.
+- Workers process events **in batches**.
+- A message is acknowledged (`ACK`) only **after** it's been written successfully.
+- Messages that were delivered but never acknowledged (a worker crashed) can be recovered through Redis pending-message handling.
+- Adding throughput means starting more workers. The event API doesn't change.
 
 ---
 
-# Analytics APIs
+## Database
 
-The backend provides analytics data used by the dashboard.
-
-The dashboard consumes endpoints for:
+PostgreSQL is the primary store. Main tables:
 
 ```text
-Event counts
-Conversion funnel
-Event trends
-Raw event activity
+users · products · events · device_users
 ```
 
-The analytics layer supports filters such as:
+The `events` table has indexes for the common query patterns:
 
 ```text
-date range
-event type
-product
-guest/logged-in user type
+(eventName, occurredAt)
+(productId, occurredAt)
+(deviceId,  occurredAt)
+(sessionId, occurredAt)
+(userId,    occurredAt)
 ```
-
-The raw event endpoint additionally supports:
-
-```text
-userId
-deviceId
-```
-
-so individual user/device activity can be visualized.
 
 ---
 
-# Database
+## Testing
 
-PostgreSQL is used as the primary persistent database.
+Three standalone scripts live in `src/scripts/`. They need the API, Redis, Postgres and at least one worker running.
 
-Main entities include:
-
-```text
-users
-products
-events
-device_users
-```
-
-The `events` table contains indexes for common analytics and lookup patterns, including:
-
-```text
-eventName + occurredAt
-productId + occurredAt
-deviceId + occurredAt
-sessionId + occurredAt
-userId + occurredAt
-```
-
-This helps the database efficiently retrieve event data for common queries.
-
----
-
-# Redis Streams
-
-For higher-volume event processing, Redis Streams is used as an asynchronous ingestion layer.
-
-The flow is:
-
-```text
-Client
-   |
-   v
-POST /events
-   |
-   v
-Redis Stream
-   |
-   v
-Consumer Group
-   |
-   +---- Worker 1
-   +---- Worker 2
-   +---- Worker 3
-   |
-   v
-PostgreSQL
-```
-
-The Redis stream is:
-
-```text
-events
-```
-
-The consumer group is:
-
-```text
-event-workers
-```
-
-Workers process events in batches.
-
-Acknowledgements are used after successful processing.
-
-Pending messages can also be recovered using Redis pending-message handling.
-
----
-
-# Multiple Workers
-
-Multiple worker processes can consume the same Redis stream.
-
-They use the same consumer group but different consumer names.
-
-This allows work to be distributed between workers.
-
-For example:
-
-```text
-event-workers
-    |
-    +---- worker-123
-    +---- worker-456
-    +---- worker-789
-```
-
-This provides a path toward horizontal scaling without changing the event API.
-
----
-
-# Testing
-
-The backend currently has three standalone test scripts under:
-
-```text
-src/scripts/
-```
-
-## 1. User Binding Test
-
-Run:
+### 1. User binding test
 
 ```bash
 bun src/scripts/test-user-binding.ts
 ```
 
-This verifies the important guest-to-user flow:
+Verifies the key guest-to-user flow:
 
 ```text
-Create guest event
-        ↓
-Register user
-        ↓
-Login
-        ↓
-Query user events
-        ↓
-Verify old guest event is visible
+Create guest event → Register user → Login → Query user events → Verify old guest event is visible
 ```
 
-Expected result:
+Expected output:
 
 ```text
 Guest event created
@@ -547,305 +310,168 @@ PASSED: Historical guest event is visible for the logged-in user.
 USER BINDING TEST PASSED
 ```
 
----
+![User binding test result](./docs/user-binding.png)
 
-## 2. 10,000 Event Test
+**What the run shows**
 
-Run:
+1. **Guest event created.** A `product_view` event is sent with no user, using a test device ID and session ID.
+2. **User registered.** A new user (`test-name`) is created and the API returns tokens and the user object.
+3. **Login successful.** The same user logs in.
+4. **Events fetched for the user.** `GET /api/v1/events` for that user returns exactly one event, with `total: 1` in the pagination block.
+
+The key detail is in that returned event: its `userId` is `null`. It is the original guest event, and it was never rewritten. It appears in the new user's history only because of the device-to-user link, which is the behavior this test is meant to prove. The script ends with `PASSED: Historical guest event is visible for the logged-in user.`
+
+### 2. 10,000 event test
 
 ```bash
 bun src/scripts/test-10000-events.ts
 ```
 
-This sends 10,000 events to the event API in batches and verifies successful ingestion.
+Sends 10,000 events to the API in batches and checks they're all ingested.
 
-The purpose is to check API ingestion behavior under a relatively high request volume.
-
----
-
-## 3. 10,000 Events/Second Test
-
-Run:
+### 3. 10,000 events/second test
 
 ```bash
 bun src/scripts/test-10000-per-sec.ts
 ```
 
-This test is intended to push the event ingestion API toward:
+Pushes the ingestion API toward 10,000 events per second.
 
-```text
-10,000 events/second
-```
+### Results
 
-Important:
+All numbers below come from a local machine.
 
-This is an API load test, not proof that PostgreSQL can permanently sustain 10,000 database inserts per second.
+**10,000-event test**
 
-The Redis Streams architecture provides the path for separating:
+| Metric | Result |
+|---|---|
+| Total events | 10,000 |
+| Successful | 10,000 |
+| Failed | 0 |
+| Duration | ~4.69 s |
+| Request throughput | ~2,131 events/sec |
 
-```text
-event ingestion
-```
+**10,000 events/second test**
 
-from:
+| Setting / metric | Value |
+|---|---|
+| Target throughput | 10,000 events/sec |
+| Configured duration | 10 s |
+| Concurrency | 10,000 |
+| Total requests sent | 20,000 |
+| Successful | 20,000 |
+| Failed | 0 |
+| Success rate | 100.00% |
+| Actual duration | 10.97 s |
+| Actual throughput | **1,822 events/sec** |
+| Target achieved | **No** |
 
-```text
-event persistence
-```
+![Stress test result](./docs/stress-test-result.png)
 
-and allows additional workers to process events asynchronously.
+The run reported per-second rates of 1,894 and 1,756 events/sec and finished with no failed requests, so the API stayed stable under 10,000 concurrent requests. It did not reach the 10,000 events/sec target: it sustained roughly 1,800 events/sec, about 18% of the goal. The script's own output says `Target achieved: NO`, and this README keeps that result as it is.
 
----
-
-# Current Performance Test
-
-A previous 10,000-event ingestion test successfully processed:
-
-```text
-Total events: 10,000
-Successful: 10,000
-Failed: 0
-Duration: ~4.69 seconds
-Request throughput: ~2,131 events/sec
-```
-
-This represents the tested API request throughput in the local environment.
-
-It should not be interpreted as a production benchmark.
+> **How to read these numbers.** This is a local API load test, not a production benchmark, and it doesn't show that PostgreSQL can sustain 10,000 inserts per second. What the architecture provides is a way to separate *accepting* events (Redis) from *persisting* them (workers → Postgres), so the two can be scaled independently. The measured 1,800 to 2,100 events/sec is well below the 10,000/sec target, and reaching it is covered in the roadmap below.
 
 ---
 
-# What Is Implemented
+## What's implemented
 
-The backend currently implements:
+**Tracking**
+- Event ingestion with per-event validation
+- `eventId`-based duplicate protection
+- Guest and logged-in tracking, with device and session identification
+- Guest-to-user historical binding via `device_users`
 
-- Event ingestion
-- Event validation
-- Event ID based duplicate protection
-- Guest event tracking
-- Logged-in event tracking
-- Device identification
-- Session identification
-- Guest-to-user historical event binding
+**Pipeline**
+- Redis Streams with consumer groups
+- Multiple workers, batch processing, acknowledgements
+- Pending-message recovery
+
+**API and data**
+- Event filtering and pagination
 - Product search
-- Event filtering
-- Pagination
-- Analytics endpoints
-- Funnel analytics
-- Trend analytics
-- PostgreSQL persistence
-- Drizzle ORM
-- Redis Streams
-- Redis consumer groups
-- Multiple event workers
-- Pending message recovery
-- User authentication
-- Refresh token flow
-- Logout
-- User/device activity lookup
-- Load/integration test scripts
+- User and device activity lookup
+- Analytics endpoints: counts, funnel, trends, raw activity
+- PostgreSQL persistence with Drizzle ORM and query-specific indexes
+
+**Auth**
+- Registration, login, refresh token flow, logout
+
+**Testing**
+- User binding, 10,000-event and 10,000-events/sec scripts
 
 ---
 
-# Future Improvements / Currently Left
+## What's missing and what to do next
 
-Some production-level improvements are intentionally left for later.
+Nothing below blocks the current demo. These are production-hardening and scaling items, roughly ordered by importance.
 
-## 1. Role-based authorization for analytics
+### 1. Role-based authorization for analytics
+Analytics endpoints currently aren't restricted by role. Any authenticated caller who can reach them can read business data.
 
-The analytics endpoints should eventually be protected by roles.
+**Plan:** add a `role` to the user model → make the auth middleware role-aware → protect analytics routes → allow only `admin`.
 
-For example:
-
-```text
-Admin
-  |
-  +---- Analytics access
-
-Normal user
-  |
-  +---- No analytics access
-```
-
-Process:
+### 2. Return `202 Accepted` after queueing
+Ingestion should acknowledge as soon as the event is safely in Redis, without waiting on the database.
 
 ```text
-1. Add role to the user model.
-2. Add role-aware authentication middleware.
-3. Protect analytics routes.
-4. Allow only authorized roles to access analytics data.
+Client → API → Redis Stream → HTTP 202 → (later) Workers → PostgreSQL
 ```
 
----
+This keeps ingestion latency independent of database write latency, and is the most direct route toward the 10k events/sec goal.
 
-## 2. Rate limiting
-
-Rate limiting can be added to protect event ingestion and authentication endpoints.
-
-For example:
+### 3. Dead-letter queue
+Events that keep failing should not be retried forever or lost.
 
 ```text
-Client
-  |
-  v
-Rate Limiter
-  |
-  +---- Allowed ----> API
-  |
-  +---- Limited ---> 429
+Worker ── success ──► ACK
+       └─ failure ──► retry ── success ──► ACK
+                          └── max retries ──► dead-letter stream
 ```
 
-For a high-throughput event API, the limiter should be designed carefully so that legitimate high-volume traffic is not blocked immediately.
+Add a retry counter, a `events-dlq` stream, and a small script to inspect and replay dead-lettered events.
 
-A production approach could use Redis-backed distributed rate limiting.
-
----
-
-## 3. Production load testing
-
-The current scripts are useful local tests.
-
-A production-grade load test can later use a dedicated load-testing tool such as k6.
-
-Process:
+### 4. Rate limiting
+Protect ingestion and the auth endpoints (login and register especially) from abuse.
 
 ```text
-1. Deploy backend.
-2. Deploy Redis and PostgreSQL.
-3. Create a k6 scenario targeting 10k events/sec.
-4. Run ramp-up testing.
-5. Measure p50/p95/p99 latency.
-6. Measure error rate.
-7. Monitor Redis stream depth.
-8. Monitor worker throughput.
-9. Monitor PostgreSQL CPU/connections/write throughput.
-10. Increase workers and repeat.
+Client → Rate limiter ── allowed ──► API
+                      └─ limited ──► 429
 ```
 
----
+Use Redis-backed limits so they work across multiple API instances. Set ingestion limits carefully so legitimate high-volume traffic isn't blocked.
 
-## 4. Better event ingestion response
+### 5. Production-grade load testing
+Replace the local scripts with a dedicated tool such as [k6](https://k6.io):
 
-The current architecture can be improved further so that the HTTP API acknowledges an event after successful queue insertion rather than waiting for database persistence.
+1. Deploy the API, Redis and PostgreSQL.
+2. Write a k6 scenario targeting 10k events/sec with a ramp-up.
+3. Record p50 / p95 / p99 latency and error rate.
+4. Watch Redis stream depth, worker throughput, and Postgres CPU, connections and write rate.
+5. Add workers and repeat.
 
-The ideal high-volume flow is:
-
-```text
-Client
-  |
-  v
-API
-  |
-  v
-Redis Stream
-  |
-  +---- HTTP 202 Accepted
-  |
-  v
-Workers
-  |
-  v
-PostgreSQL
-```
-
-This keeps ingestion latency independent from database write latency.
-
----
-
-## 5. Dead-letter handling
-
-Failed events should eventually be moved to a dead-letter stream after retry attempts are exhausted.
-
-Process:
-
-```text
-Redis Stream
-     |
-     v
-Worker
-     |
-     +---- success ---> ACK
-     |
-     +---- failure ---> retry
-                         |
-                         +---- success ---> ACK
-                         |
-                         +---- max retries ---> DLQ
-```
-
----
-
-## 6. Observability
-
-Production deployment should eventually add:
-
+### 6. Observability
 - Structured logging
-- Metrics
-- Request latency monitoring
-- Redis stream depth monitoring
+- Request latency metrics
+- Redis stream depth and consumer lag
 - Worker throughput
 - PostgreSQL metrics
-- Error tracking
-- Alerts
+- Error tracking and alerts
+
+Stream depth growing steadily is the first sign workers can't keep up, so alert on it.
+
+### 7. Further ideas
+These aren't in the current plan but would be natural next steps as data grows:
+
+- **Pre-aggregated analytics.** Funnel and trend queries over a very large `events` table get slow. Rollup tables or materialized views refreshed on a schedule keep the dashboard fast.
+- **Table partitioning and retention.** Partition `events` by `occurredAt` (monthly, for example) and archive or drop old partitions.
+- **Automated tests in CI.** The three scripts are manual. Turning the user-binding script into an automated integration test would catch regressions.
+- **Idempotent binding.** Add a unique constraint on `(deviceId, userId)` in `device_users` if not already present, so repeated logins don't create duplicate links.
+- **Privacy controls.** Add a way to delete a user's events and device links on request, and decide how long guest data is kept.
 
 ---
 
-# Architecture Summary
+## Notes
 
-```text
-                  Next.js Frontend
-                         |
-                         | events
-                         v
-                Express/Bun API
-                         |
-             +-----------+-----------+
-             |                       |
-             v                       v
-       Authentication          Event Validation
-                                     |
-                                     v
-                              Redis Stream
-                                     |
-                          +----------+----------+
-                          |          |          |
-                          v          v          v
-                       Worker 1   Worker 2   Worker 3
-                          |          |          |
-                          +----------+----------+
-                                     |
-                                     v
-                                PostgreSQL
-                                     |
-                         +-----------+-----------+
-                         |           |           |
-                         v           v           v
-                       Events     Users      Products
-                                     |
-                                     v
-                              device_users
-```
-
----
-
-# Final Status
-
-The backend currently provides the core analytics system end-to-end:
-
-```text
-Event tracking
-      ↓
-Validation
-      ↓
-Guest/User identity
-      ↓
-Redis asynchronous processing
-      ↓
-PostgreSQL
-      ↓
-Analytics APIs
-      ↓
-Frontend dashboard
-```
-
-The remaining items listed above are production-hardening and scaling improvements rather than blockers for the current demonstration.
+- Test scripts need the API, Redis, PostgreSQL and at least one worker running, or events will be accepted but never persisted.
+- The load-test figures are from a local environment and will vary by machine.
